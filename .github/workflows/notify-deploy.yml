@@ -1,0 +1,52 @@
+name: Notify Deploy
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: notify-deploy-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  notify:
+    name: Notify personal_remote deploy
+    if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[skip ci]') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Send repository dispatch (twenty_updated)
+        env:
+          DISPATCH_TOKEN: ${{ secrets.DEPLOY_DISPATCH_TOKEN }}
+          DEPLOY_REPO: ${{ vars.DEPLOY_OWNER_REPO || 'AhtishamHussain/personal_remote' }}
+          EVENT_TYPE: ${{ vars.DEPLOY_EVENT_TYPE || 'twenty_updated' }}
+        run: |
+          set -euo pipefail
+          if [ -z "${DISPATCH_TOKEN}" ] || [ -z "${DEPLOY_REPO}" ]; then
+            echo "::error::Missing DEPLOY_DISPATCH_TOKEN (secret) or DEPLOY_OWNER_REPO (variable)."
+            echo "Set DEPLOY_OWNER_REPO=AhtishamHussain/personal_remote and a PAT with repo scope."
+            exit 1
+          fi
+          payload="$(jq -n \
+            --arg event_type "${EVENT_TYPE}" \
+            --arg repository "${{ github.repository }}" \
+            --arg ref "${{ github.ref_name }}" \
+            --arg sha "${{ github.sha }}" \
+            '{event_type: $event_type, client_payload: {repository: $repository, ref: $ref, sha: $sha}}')"
+          http_code="$(curl -sS -o /tmp/dispatch-response.txt -w "%{http_code}" -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${DISPATCH_TOKEN}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${DEPLOY_REPO}/dispatches" \
+            -d "${payload}")"
+          if [ "${http_code}" != "204" ]; then
+            echo "::error::Dispatch failed HTTP ${http_code}"
+            cat /tmp/dispatch-response.txt || true
+            exit 1
+          fi
+          echo "Dispatched ${EVENT_TYPE} to ${DEPLOY_REPO} for ${{ github.sha }}"
